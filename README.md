@@ -1,6 +1,6 @@
 # Circle Detection
 Detect circles seen by a webcam with OpenCV
-
+![Detected ping pong balls](https://i.imgur.com/A9CQpPj.png)
 ## Requirements
 * OpenCV
 * GoCV
