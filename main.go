@@ -47,9 +47,9 @@ func showImg(webcam * gocv.VideoCapture, window * gocv.Window, img gocv.Mat) {
 		1, // dp
 		float64(img.Rows()/8), // minDist
 		75, // param1
-		40, // param2
-		3, // minRadius
-		60,  // maxRadius
+		20, // param2
+		25, // minRadius
+		28,  // maxRadius
 	)
 
 	blue := color.RGBA{0, 0, 255, 0}
