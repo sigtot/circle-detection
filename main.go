@@ -60,22 +60,49 @@ func drawPredictImage(window *gocv.Window, webcam *gocv.VideoCapture, f *kalman.
 	cimg := gocv.NewMat()
 	defer cimg.Close()
 
-	gocv.CvtColor(img, &img, gocv.ColorRGBToGray)
-	gocv.CvtColor(img, &cimg, gocv.ColorGrayToBGR)
+	rot := float64(90)
+	orangeBelow := gocv.NewScalar(rot, 50, 20, 0)
+	orangeAbove := gocv.NewScalar(rot+30, 150, 150, 0)
+
+	gocv.CvtColor(img, &cimg, gocv.ColorRGBToHLS)
+
+	gocv.InRangeWithScalar(cimg, orangeBelow, orangeAbove, &cimg)
+
+	gocv.Canny(cimg, &cimg, 5, 5)
+
+	kernel := gocv.GetStructuringElement(gocv.MorphRect, image.Pt(3, 3))
+	defer kernel.Close()
+	gocv.Dilate(cimg, &cimg, kernel)
+
+	contours := gocv.FindContours(cimg, gocv.RetrievalList, gocv.ChainApproxSimple)
+
+	statusColor := color.RGBA{255, 0, 0, 0}
+	for i, c := range contours {
+		area := gocv.ContourArea(c)
+		if area < 100 {
+			continue
+		}
+
+		gocv.DrawContours(&img, contours, i, statusColor, 2)
+
+		rect := gocv.BoundingRect(c)
+
+		gocv.Rectangle(&img, rect, color.RGBA{0, 0, 255, 0}, 2)
+	}
 
 	circles := gocv.NewMat()
 	defer circles.Close()
 
 	gocv.HoughCirclesWithParams(
-		img,
+		cimg,
 		&circles,
 		gocv.HoughGradient,
 		1, // dp
 		float64(img.Rows()/8), // minDist
 		75, // param1
-		25, // param2
-		25, // minRadius
-		28, // maxRadius
+		30, // param2
+		20, // minRadius
+		30, // maxRadius
 	)
 
 	blue := color.RGBA{0, 0, 255, 0}
@@ -105,7 +132,7 @@ func drawPredictImage(window *gocv.Window, webcam *gocv.VideoCapture, f *kalman.
 			}
 		}
 	}
-	window.IMShow(cimg)
+	window.IMShow(img)
 	window.WaitKey(1)
 }
 
@@ -128,7 +155,7 @@ func printLocation(webcam *gocv.VideoCapture) {
 	gocv.HoughCirclesWithParams(
 		img,
 		&circles,
-		gocv.HoughGradient,
+		gocv.HoughStandard,
 		1, // dp
 		float64(img.Rows()/8), // minDist
 		75, // param1
