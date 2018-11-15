@@ -12,13 +12,14 @@ import (
 )
 
 func main() {
-	webcam, _ := gocv.OpenVideoCapture(0)
+	webcam, _ := gocv.OpenVideoCapture(1)
 	defer webcam.Close()
 
 	window := gocv.NewWindow("Circles")
+	window2 := gocv.NewWindow("Canny")
 
 	A := mat.NewDense(4, 4, []float64{1, 0, 0, 0.1677, 0, 1, 0.1677, 0, 0, 0, 1, 0, 0, 0, 0, 1})
-	B := mat.NewDense(4, 1, []float64{0, 0.0001406, 0.1677, 0})
+	B := mat.NewDense(4, 1, []float64{0, 0.0001406, 3 * 0.1677, 0})
 	C := mat.NewDense(2, 4, []float64{1, 0, 0, 0, 0, 1, 0, 0})
 	D := mat.NewDense(2, 1, []float64{0, 0})
 	G := mat.NewDiagonal(4, []float64{0.2, 0.2, 0.1, 0.1})
@@ -38,7 +39,7 @@ func main() {
 	for {
 		select {
 		case <-ticker.C:
-			drawPredictImage(window, webcam, &f)
+			drawPredictImage(window, window2, webcam, &f)
 		case <-quit:
 			ticker.Stop()
 			return
@@ -46,8 +47,9 @@ func main() {
 	}
 }
 
-func drawPredictImage(window *gocv.Window, webcam *gocv.VideoCapture, f *kalman.Filter) {
+func drawPredictImage(window *gocv.Window, cannyWindow *gocv.Window, webcam *gocv.VideoCapture, f *kalman.Filter) {
 	img := gocv.NewMat()
+	defer img.Close()
 	if ok := webcam.Read(&img); !ok {
 		log.Fatal("Webcam closed")
 	}
@@ -60,9 +62,9 @@ func drawPredictImage(window *gocv.Window, webcam *gocv.VideoCapture, f *kalman.
 	cimg := gocv.NewMat()
 	defer cimg.Close()
 
-	rot := float64(90)
-	orangeBelow := gocv.NewScalar(rot, 50, 20, 0)
-	orangeAbove := gocv.NewScalar(rot+30, 150, 150, 0)
+	rot := float64(95)
+	orangeBelow := gocv.NewScalar(rot, 50, 10, 0)
+	orangeAbove := gocv.NewScalar(rot+20, 150, 150, 0)
 
 	gocv.CvtColor(img, &cimg, gocv.ColorRGBToHLS)
 
@@ -83,11 +85,7 @@ func drawPredictImage(window *gocv.Window, webcam *gocv.VideoCapture, f *kalman.
 			continue
 		}
 
-		gocv.DrawContours(&img, contours, i, statusColor, 2)
-
-		rect := gocv.BoundingRect(c)
-
-		gocv.Rectangle(&img, rect, color.RGBA{0, 0, 255, 0}, 2)
+		gocv.DrawContours(&cimg, contours, i, statusColor, 2)
 	}
 
 	circles := gocv.NewMat()
@@ -100,8 +98,8 @@ func drawPredictImage(window *gocv.Window, webcam *gocv.VideoCapture, f *kalman.
 		1, // dp
 		float64(img.Rows()/8), // minDist
 		75, // param1
-		30, // param2
-		20, // minRadius
+		10, // param2
+		25, // minRadius
 		30, // maxRadius
 	)
 
@@ -120,19 +118,21 @@ func drawPredictImage(window *gocv.Window, webcam *gocv.VideoCapture, f *kalman.
 			output := mat.NewVecDense(2, []float64{float64(x), float64(y)})
 			f.AddOutput(output)
 
-			gocv.Circle(&cimg, image.Pt(x, y), r, blue, 2)
-			gocv.Circle(&cimg, image.Pt(x, y), 2, red, 3)
+			gocv.Circle(&img, image.Pt(x, y), r, blue, 2)
+			gocv.Circle(&img, image.Pt(x, y), 2, red, 3)
 
+			fmt.Printf("Found circle: (%d,%d)\n", x, y)
 			// Draw 10 predicted positions
 			for i := 0; i < 100; i++ {
 				aPostStateEst := f.APostStateEst(f.CurrentK() + i)
 				predX := aPostStateEst.At(0, 0)
 				predY := aPostStateEst.At(1, 0)
-				gocv.Circle(&cimg, image.Pt(int(predX), int(predY)), 2, redPred, 2)
+				gocv.Circle(&img, image.Pt(int(predX), int(predY)), 2, redPred, 2)
 			}
 		}
 	}
 	window.IMShow(img)
+	cannyWindow.IMShow(cimg)
 	window.WaitKey(1)
 }
 
@@ -159,7 +159,7 @@ func printLocation(webcam *gocv.VideoCapture) {
 		1, // dp
 		float64(img.Rows()/8), // minDist
 		75, // param1
-		22, // param2
+		10, // param2
 		25, // minRadius
 		28, // maxRadius
 	)
