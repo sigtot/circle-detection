@@ -62,77 +62,54 @@ func drawPredictImage(window *gocv.Window, cannyWindow *gocv.Window, webcam *goc
 	cimg := gocv.NewMat()
 	defer cimg.Close()
 
-	rot := float64(95)
-	orangeBelow := gocv.NewScalar(rot, 50, 10, 0)
-	orangeAbove := gocv.NewScalar(rot+20, 150, 150, 0)
+	mask := gocv.NewMat()
+	defer mask.Close()
 
-	gocv.CvtColor(img, &cimg, gocv.ColorRGBToHLS)
+	hsvImg := gocv.NewMat()
+	defer hsvImg.Close()
 
-	gocv.InRangeWithScalar(cimg, orangeBelow, orangeAbove, &cimg)
+	rot := float64(10)
+	orangeBelow := gocv.NewScalar(rot, 80, 80, 0)
+	orangeAbove := gocv.NewScalar(rot+15, 255, 255, 0)
 
-	gocv.Canny(cimg, &cimg, 5, 5)
+	gocv.CvtColor(img, &hsvImg, gocv.ColorRGBAToBGR)
+	gocv.CvtColor(hsvImg, &hsvImg, gocv.ColorBGRToHLS)
+	gocv.InRangeWithScalar(hsvImg, orangeBelow, orangeAbove, &mask)
 
-	kernel := gocv.GetStructuringElement(gocv.MorphRect, image.Pt(3, 3))
-	defer kernel.Close()
-	gocv.Dilate(cimg, &cimg, kernel)
-
-	contours := gocv.FindContours(cimg, gocv.RetrievalList, gocv.ChainApproxSimple)
-
-	statusColor := color.RGBA{255, 0, 0, 0}
-	for i, c := range contours {
-		area := gocv.ContourArea(c)
-		if area < 100 {
-			continue
-		}
-
-		gocv.DrawContours(&cimg, contours, i, statusColor, 2)
-	}
-
-	circles := gocv.NewMat()
-	defer circles.Close()
-
-	gocv.HoughCirclesWithParams(
-		cimg,
-		&circles,
-		gocv.HoughGradient,
-		1, // dp
-		float64(img.Rows()/8), // minDist
-		75, // param1
-		10, // param2
-		25, // minRadius
-		30, // maxRadius
-	)
-
-	blue := color.RGBA{0, 0, 255, 0}
-	red := color.RGBA{255, 0, 0, 0}
-	redPred := color.RGBA{255, 0, 0, 150}
-
-	for i := 0; i < circles.Cols(); i++ {
-		v := circles.GetVecfAt(0, i)
-		// if circles are found
-		if len(v) > 2 {
-			x := int(v[0])
-			y := int(v[1])
-			r := int(v[2])
-
-			output := mat.NewVecDense(2, []float64{float64(x), float64(y)})
-			f.AddOutput(output)
-
-			gocv.Circle(&img, image.Pt(x, y), r, blue, 2)
-			gocv.Circle(&img, image.Pt(x, y), 2, red, 3)
-
-			fmt.Printf("Found circle: (%d,%d)\n", x, y)
-			// Draw 10 predicted positions
-			for i := 0; i < 100; i++ {
-				aPostStateEst := f.APostStateEst(f.CurrentK() + i)
-				predX := aPostStateEst.At(0, 0)
-				predY := aPostStateEst.At(1, 0)
-				gocv.Circle(&img, image.Pt(int(predX), int(predY)), 2, redPred, 2)
-			}
+	c := gocv.FindContours(mask, gocv.RetrievalExternal, gocv.ChainApproxNone)
+	largestContour := 0
+	largestContourCount := 0
+	for i := range c {
+		length := len(c[i])
+		if length > largestContourCount {
+			largestContour = i
+			largestContourCount = length
 		}
 	}
-	window.IMShow(img)
-	cannyWindow.IMShow(cimg)
+	if len(c) > 0 {
+		red := color.RGBA{255, 0, 0, 0}
+		green := color.RGBA{0, 255, 0, 0}
+
+		rect := gocv.MinAreaRect(c[largestContour])
+
+		x := rect.Center.X
+		y := rect.Center.Y
+
+		gocv.Circle(&img, image.Pt(x, y), 7, red, 13)
+
+		output := mat.NewVecDense(2, []float64{float64(x), float64(y)})
+		f.AddOutput(output)
+
+		// Draw 100 predicted positions
+		for i := 0; i < 100; i++ {
+			aPostStateEst := f.APostStateEst(f.CurrentK() + i)
+			predX := aPostStateEst.At(0, 0)
+			predY := aPostStateEst.At(1, 0)
+			gocv.Circle(&img, image.Pt(int(predX), int(predY)), 2, green, 2)
+		}
+	}
+	window.IMShow(mask)
+	cannyWindow.IMShow(img)
 	window.WaitKey(1)
 }
 
