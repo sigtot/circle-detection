@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"github.com/sigtot/byggern-rest/serial"
 	"github.com/sigtot/kalman"
 	"gocv.io/x/gocv"
 	"gonum.org/v1/gonum/mat"
@@ -19,15 +20,23 @@ const xRight = 540
 const clusterThresh = 10
 const boxPadding = 30
 
+const serialName = "/dev/ttyACM0"
+const serialBaud = 9600
+const serialStopBits = 2
+
+const xScale = 0.38
+const xOffset = 2 * xLeft
+
+const kickThresh = 6
+
 func main() {
 	webcam, _ := gocv.OpenVideoCapture(1)
 	defer webcam.Close()
 
-	window := gocv.NewWindow("Mask")
-	window2 := gocv.NewWindow("Web camera")
+	window := gocv.NewWindow("Web camera")
 
 	A := mat.NewDense(4, 4, []float64{1, 0, 0, 0.1677, 0, 1, 0.1677, 0, 0, 0, 1, 0, 0, 0, 0, 1})
-	B := mat.NewDense(4, 1, []float64{0, 0.0001406, 4 * 0.1677, 0})
+	B := mat.NewDense(4, 1, []float64{0, 0.0001406, 6 * 0.1677, 0})
 	C := mat.NewDense(2, 4, []float64{1, 0, 0, 0, 0, 1, 0, 0})
 	D := mat.NewDense(2, 1, []float64{0, 0})
 	G := mat.NewDiagonal(4, []float64{0.2, 0.2, 0.1, 0.1})
@@ -42,16 +51,30 @@ func main() {
 
 	f := kalman.NewFilter(A, B, C, D, H, G, R, Q, aPriErrCovInit, aPriStateEstInit, input, outputInit)
 
+	conn, err := serial.CreateConnection(
+		serialName,
+		serialBaud,
+		serialStopBits)
+	if err != nil {
+		log.Println(err)
+		return
+	}
+
 	ticker := time.NewTicker(16 * time.Millisecond)
 	quit := make(chan struct{})
 	for {
 		select {
 		case <-ticker.C:
-			drawPredictImage(window, window2, webcam, &f)
+			drawPredictImage(window, webcam, &f, conn)
+			//sendPredictPos(webcam, &f, conn)
 		case <-quit:
 			ticker.Stop()
 			return
 		}
+	}
+	err = conn.Close()
+	if err != nil {
+		log.Println(err)
 	}
 }
 
@@ -137,7 +160,89 @@ func findIntersection(pt1 image.Point, pt2 image.Point, y0 int) int {
 	return pt1.X + (pt1.X-pt2.X)/(pt1.Y-pt2.Y)*(y0-pt1.Y)
 }
 
-func drawPredictImage(window *gocv.Window, cannyWindow *gocv.Window, webcam *gocv.VideoCapture, f *kalman.Filter) {
+func sendPredictPos(webcam *gocv.VideoCapture, f *kalman.Filter, conn serial.Connection) {
+	err := conn.Write(fmt.Sprintf("{servo=%d}", 25))
+	if err != nil {
+		fmt.Print(err)
+	}
+	img := gocv.NewMat()
+	defer img.Close()
+	if ok := webcam.Read(&img); !ok {
+		log.Fatal("Webcam closed")
+	}
+
+	if img.Empty() {
+		log.Println("Warning: Read empty image")
+		return
+	}
+
+	cimg := gocv.NewMat()
+	defer cimg.Close()
+
+	mask := gocv.NewMat()
+	defer mask.Close()
+
+	hsvImg := gocv.NewMat()
+	defer hsvImg.Close()
+
+	rot := float64(10)
+	hlsBlueBelow := gocv.NewScalar(rot, 80, 80, 0)
+	hlsBlueAbove := gocv.NewScalar(rot+15, 255, 255, 0)
+
+	gocv.CvtColor(img, &hsvImg, gocv.ColorRGBAToBGR)
+	gocv.CvtColor(hsvImg, &hsvImg, gocv.ColorBGRToHLS)
+	gocv.InRangeWithScalar(hsvImg, hlsBlueBelow, hlsBlueAbove, &mask)
+
+	c := gocv.FindContours(mask, gocv.RetrievalExternal, gocv.ChainApproxNone)
+	largestContour := 0
+	largestContourCount := 0
+	for i := range c {
+		length := len(c[i])
+		if length > largestContourCount {
+			largestContour = i
+			largestContourCount = length
+		}
+	}
+
+	if len(c) > 0 {
+		rect := gocv.MinAreaRect(c[largestContour])
+
+		x := rect.Center.X
+		y := rect.Center.Y
+
+		output := mat.NewVecDense(2, []float64{float64(x), float64(y)})
+		f.AddOutput(output)
+
+		//kicked := false
+		// Draw 100 predicted positions
+		lastPredY := f.APostStateEst(f.CurrentK()).At(1, 0)
+		for i := 0; i < 100; i++ {
+			aPostStateEst := f.APostStateEst(f.CurrentK() + i)
+			predX := aPostStateEst.At(0, 0)
+			predY := aPostStateEst.At(1, 0)
+
+			// Ball crosses bottom line at this i
+			if lastPredY > y0 && predY < y0 {
+				xPos := confinedToRange(int(predX), xLeft, xRight)
+
+				cartReference := int(float64(img.Rows()-xPos+xOffset) * xScale)
+				err := conn.Write(fmt.Sprintf("{motor=%d}", cartReference))
+				if err != nil {
+					log.Println(err)
+				}
+				/*
+				                if i < kickThresh && kicked == false {
+									err = conn.Write("{kick}")
+									kicked = true
+								}
+				*/
+			}
+			lastPredY = predY
+		}
+	}
+}
+
+func drawPredictImage(window *gocv.Window, webcam *gocv.VideoCapture, f *kalman.Filter, conn serial.Connection) {
 	img := gocv.NewMat()
 	defer img.Close()
 	if ok := webcam.Read(&img); !ok {
@@ -203,8 +308,18 @@ func drawPredictImage(window *gocv.Window, cannyWindow *gocv.Window, webcam *goc
 
 			// Ball crosses bottom line at this k
 			if lastPredY > y0 && predY < y0 {
-				cartReference := confinedToRange(int(predX), xLeft, xRight)
-				gocv.Circle(&img, image.Pt(cartReference, (int(predY)+int(lastPredY))/2), 5, yellow, 5)
+				xPos := confinedToRange(int(predX), xLeft, xRight)
+
+				gocv.Circle(&img, image.Pt(xPos, (int(predY)+int(lastPredY))/2), 5, yellow, 5)
+
+				/*
+								cartReference := int(float64(img.Rows() - xPos + 250) * xScale)
+				                err := conn.Write(fmt.Sprintf("{motor=%d}", cartReference))
+				                if err != nil {
+				                    log.Println(err)
+				                }
+				*/
+
 			}
 			lastPredY = predY
 		}
@@ -214,8 +329,7 @@ func drawPredictImage(window *gocv.Window, cannyWindow *gocv.Window, webcam *goc
 	gocv.Line(&img, image.Pt(xLeft-boxPadding, y0), image.Pt(xRight+boxPadding, y0), blue, 2)
 	gocv.Line(&img, image.Pt(xLeft, y0), image.Pt(xRight, y0), green, 2)
 
-	window.IMShow(mask)
-	cannyWindow.IMShow(img)
+	window.IMShow(img)
 	window.WaitKey(1)
 }
 
